@@ -2,7 +2,7 @@
 
 ## What is this all about?
 
-When my brother called my and had some questions on microcontrollers and ePaper, I was curious what this is all about. He found [Weatherman Dashboard for ESPHome](https://github.com/Madelena/esphome-weatherman-dashboard) on the Internet and wanted to build such an ePaper-Frame. And shortly afterwards, me too!
+When my brother called me and had some questions on microcontrollers and ePaper, I was curious what this is all about. He found [Weatherman Dashboard for ESPHome](https://github.com/Madelena/esphome-weatherman-dashboard) on the Internet and wanted to build such an ePaper-Frame. And shortly afterwards, me too!
 
 That is why I started out on this project. I had not tinkered a lot with microcontrollers in recent years. Because of a very old installation of Arduino on a PC, I started out to install [PlatformIO](https://platformio.org) (a plugin for Visual Studio Code) on my Mac. And I ran the famous blink program on a Sparkfun ESP8266 Thing the same evening.
 
