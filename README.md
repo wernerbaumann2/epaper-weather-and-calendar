@@ -4,14 +4,13 @@
 
 When my brother called my and had some questions on microcontrollers and ePaper, I was curious what this is all about. He found [Weatherman Dashboard for ESPHome](https://github.com/Madelena/esphome-weatherman-dashboard) on the Internet and wanted to build such an ePaper-Frame. And shortly afterwards, me too!
 
-That is why I started out on this project. I had not tinkered a lot with microcontrollers in recent years. Because of a very old installation of Arduino on a PC, I started out to install PlatformIO (a plugin for Visual Studio Code) on my Mac. And I ran the famous blink program on a Sparkfun ESP8266 Thing the same evening.
+That is why I started out on this project. I had not tinkered a lot with microcontrollers in recent years. Because of a very old installation of Arduino on a PC, I started out to install [PlatformIO](https://platformio.org) (a plugin for Visual Studio Code) on my Mac. And I ran the famous blink program on a Sparkfun ESP8266 Thing the same evening.
 
 ## Goals
 The goal of the Project for me was to 
-- display 
-  - current weather including a forecast
-  - the family calendar
-- running this all with the least possible amount of energy
+- display the current weather including a forecast
+- display the family calendar
+- running it all with the least possible amount of energy
 
 Once finalized, it looks like this: 
 <img src="ePaper Weather And Calendar.jpg" alt="the finalized frame!" height="400">
@@ -38,5 +37,4 @@ Once finalized, it looks like this:
 
 ## References
 - [Waveshare Support Page for E-Paper ESP32 Driver Board](https://www.waveshare.com/wiki/E-Paper_ESP32_Driver_Board)
-- https://github.com/ZinggJM/GxEPD2 .. or the library which supports 4 gray tones on a B/W ePaper?!
 - inspired by [Weatherman Dashboard for ESPHome](https://github.com/Madelena/esphome-weatherman-dashboard) and [ESPHome ePaper Calendar](https://github.com/paviro/ESPHome-ePaper-Calendar)
