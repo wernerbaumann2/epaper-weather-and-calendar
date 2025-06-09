@@ -21,6 +21,7 @@ The goal of the Project for me is to
 - installed ESPHome on my HomeAssistant
 - got inspired by the projects of @Madelena and @paviro, and copy/pasted from their projects (see References)
 - what I did change
+  - used optimized driver for the display which supports partial refreshes (faster!!)
   - my weather information is based on [openweathermap.org](https://openweathermap.org/)
   - added a touchpad sensor of ESP32 to wake up the panel from deep sleep
   - adapted code to read from ESP32s internal ADC

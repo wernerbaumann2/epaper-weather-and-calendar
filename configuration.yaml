@@ -1,0 +1,12 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# your own configuration.yaml entries .. 
+
+
+# and now those needed to run epaper-weather-and-calendar:
+homeassistant:
+  packages: !include_dir_merge_named myown_packages/
+
+# Enable python script support needed for the calendar data conversion
+python_script:

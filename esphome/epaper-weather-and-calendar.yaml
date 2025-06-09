@@ -1,0 +1,943 @@
+# ------------------------------------------------
+#           Change configuration here
+# ------------------------------------------------
+substitutions:
+  device_name: epaper-weather-and-calendar
+  friendly_name: "ePaper Weather and Calendar"
+  
+  deep_sleep_duration: 20min
+  night_time_deep_sleep_duration: 4h
+  
+  night_time_start: "22"
+  night_time_end: "6"
+  
+  data_entity_id: sensor.epaper_weather_and_calendar_data
+  data_updated_during_deep_sleep_entity_id: binary_sensor.epaper_weather_and_calendar_update_during_deep_sleep
+  
+  # all keys/passwords are read from the secrets.yaml file .. define the following values:
+  #api_encryption_key: "<your API encryption key>"
+
+  # Wi-Fi SSID and passwords
+  #wifi_ssid: "<your WiFi SSID>"
+  #wifi_password: "<your WiFi password>"
+
+  # Wi-Fi password in Access Point mode
+  #wifi_ap_password: "<your AP mode password>"
+
+  # OTA password
+  #ota_password: "<your OTA password>"
+  
+  # If you use a different font, you will probably need to adjust the spacing and positions in the code
+  font_medium: 'fonts/GothamRnd-Medium.otf'
+  font_bold: 'fonts/GothamRnd-Bold.ttf'
+  font_mdi: 'fonts/materialdesignicons-webfont.ttf'
+  
+  # Specify the full and empty voltage of the battery you use
+  battery_full_voltage: "4.2" # in V
+  battery_empty_voltage: "3.2" # in V
+  
+  # Specify settings for touch pad
+  esp32_touch_setup_mode: 'false' # false for operation, true to find out the threshold
+  esp32_touch_pin: GPIO32 # needs to be a touch capable pin
+  esp32_touch_threshold: '1000' # a good value to start with
+
+  # specify settings for battery voltage measurement
+  adc_battery_pin: GPIO33
+  adc_battery_factor: '3.2' # using a 100k/(100k+220k) voltage divider
+
+# ----------------------------------------------------------------------------------
+#             Danger Zone - only change if you know what you are doing
+# ----------------------------------------------------------------------------------
+
+# based on
+# - https://github.com/Madelena/esphome-weatherman-dashboard/blob/main/weatherman.yaml
+# - https://github.com/paviro/ESPHome-ePaper-Calendar
+# but adapted to fit my own needs
+# - weather and family calendar
+
+esphome:
+  name: $device_name
+  friendly_name: $friendly_name
+  project:
+    name: "wernerbaumann2.epaper_weather_and_calendar"
+    version: "0.5.1"
+  includes:
+    - includes/calendar/calendar_utilities.h
+    - includes/calendar/text_utilities.h
+    - includes/calendar/time_utilities.h
+    - includes/calendar/misc_utilities.h
+  on_boot:
+    - priority: 300.0
+      then:
+        - if:
+            condition:
+              # 0 = normal boot
+              - lambda: 'return esp_sleep_get_wakeup_cause() == 0;'
+            then:
+              # Show "waiting for data" screen
+              - script.execute: update_screen
+    - priority: -100.0
+      then:
+        - script.execute: boot_script
+  on_shutdown:
+    - priority: -100.0
+      then:
+        # Update all sensors 
+        - component.update: display_refreshes_sensor
+        - component.update: wifisignal
+        - component.update: last_wake_up_cause
+        - component.update: battery_level
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# allow touch pad
+esp32_touch:
+  setup_mode: $esp32_touch_setup_mode
+
+deep_sleep:
+  id: deep_sleep_1
+  touch_wakeup: true
+
+# Enable logging
+logger:
+
+# Enable usage of json
+json:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+button:
+  - platform: shutdown
+    name: "Shutdown"
+    id: shutdown_button
+  - platform: restart
+    name: "Restart"
+  - platform: template
+    name: "Refresh Screen"
+    entity_category: config
+    on_press:
+      - script.execute: update_screen
+  - platform: template
+    name: "Erase Screen"
+    entity_category: config
+    on_press:
+      - script.execute: erase_screen
+
+# Global variables for detecting if the display needs to be refreshed. (Thanks @paviro!)
+globals:
+  - id: data_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: display_refreshes
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  - id: last_display_update_stored
+    type: long int
+    restore_value: yes
+    initial_value: '0'
+  - id: battery_empty_symbol_shown
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+  - id: boot_script_finished_running
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# Script for updating screen - Refresh display and publish refresh count and time. (Thanks @paviro!)
+script:
+  - id: update_screen
+    then:
+      - logger.log: 'Running update_screen script...'
+      - display.page.show: show_content
+      - component.update: eink_display
+      - lambda: 'id(display_refreshes) += 1;'
+      - logger.log: 'Updating last_display_update timestamp...'
+      - lambda: "id(last_display_update).publish_state(id(homeassistant_time).now().timestamp);"
+
+  - id: erase_screen
+    then:
+      - logger.log: 'Running erase_screen script...'
+      - display.page.show: erase
+      - component.update: eink_display
+      - lambda: "id(display_refreshes) += 1;"
+      - logger.log: 'Updating last_display_update timestamp...'
+      - lambda: "id(last_display_update).publish_state(id(homeassistant_time).now().timestamp);"
+
+  - id: update_screen_if_data_updated
+    then:
+      - if:
+          condition:
+            or:
+              - binary_sensor.is_on: "data_updated_during_deep_sleep"
+              - and:
+                  - lambda: 'return id(battery_empty_symbol_shown) == true;'
+                  - sensor.in_range:
+                      id: battery_level
+                      above: 0.0
+          then:
+            - logger.log: 'Weather or Calendar data updated - Refreshing panel...'
+            - script.execute: update_screen
+          else:
+            - logger.log: 'Weather or Calendar data has not been updated - Skipping panel refresh...'
+      - if:
+          condition:
+            sensor.in_range:
+              id: battery_level
+              below: 0.0
+          then:
+            - logger.log: 'Battery is empty - Refreshing panel to show icon...'
+            - script.execute: update_screen
+            - logger.log: 'Battery is empty - Shutting down...'
+            - button.press: shutdown_button
+            
+  - id: check_deep_sleep
+    then:
+          # Wait so some more sensor updates can be pushed out
+          - delay: 500ms
+          - if:
+              condition:
+                  - binary_sensor.is_off: disable_deep_sleep
+              then:
+                - script.execute: enter_deep_sleep
+              else:
+                - logger.log: 'Deep sleep disabled - Waiting for OTA update...'
+                # Suspend component update to reduce frequency when deep sleep is disabled
+                - component.suspend: battery_voltage
+                
+  - id: enter_deep_sleep
+    then:
+      - lambda: |-
+          auto time = id(homeassistant_time).now();
+
+          int night_time_start = $night_time_start;
+          int night_time_end = $night_time_end;
+
+          // Default deep sleep duration
+          long deep_sleep_duration_in_sec = parse_time_to_seconds("$deep_sleep_duration");
+          
+          if (time.hour >= night_time_start || time.hour < night_time_end){
+            // Night time use extended deep sleep duration
+            deep_sleep_duration_in_sec = parse_time_to_seconds("$night_time_deep_sleep_duration");
+            ESP_LOGD("deep_sleep_duration_finder", "Default duration (night time): %ld seconds", deep_sleep_duration_in_sec);
+
+            long night_end = seconds_until_night_end(time, night_time_end);
+            if (deep_sleep_duration_in_sec > night_end) {
+                  deep_sleep_duration_in_sec = night_end;
+                  ESP_LOGD("deep_sleep_duration_finder", "Night time duration exceeds end of the configured night time, shortening to: %ld seconds", deep_sleep_duration_in_sec);
+            }
+
+          } else {
+            ESP_LOGD("deep_sleep_duration_finder", "Default duration (day time): %ld seconds", deep_sleep_duration_in_sec);
+          }
+          
+          // Time until midnight (+ 2s delay)
+          long midnight = seconds_until_midnight(time);
+          ESP_LOGD("deep_sleep_duration_finder", "Time until day change: %ld seconds", midnight);
+          midnight = midnight != 0 ? midnight + 2 : midnight;
+
+          // Time until the next event end time (+ 61s delay)
+          long next_event = seconds_until_closest_event_end(time, id(closest_end_time).state);
+          ESP_LOGD("deep_sleep_duration_finder", "Time until next event ends: %ld seconds", next_event);
+          next_event = next_event != 0 ? next_event + 61 : next_event;
+
+          // Calculate which comes first: default deep sleep duration, midnight, next event ends
+          long sleep_durations[3] = {deep_sleep_duration_in_sec, midnight, next_event};
+          long next_sleep_duration = find_non_zero_min_in_array(sleep_durations, 3);
+          ESP_LOGD("deep_sleep_duration_finder", "Next sleep duration will be: %ld seconds", next_sleep_duration);
+          
+          // Use result as the next deep sleep duration
+          id(deep_sleep_1).set_sleep_duration(next_sleep_duration*1000);
+
+          // publish to backend so we can see when the ePaper wakes up next
+          id(next_wake_up).publish_state(id(homeassistant_time).now().timestamp+next_sleep_duration);
+      - delay: 500ms
+      - deep_sleep.enter:
+          id: deep_sleep_1
+                
+  - id: boot_script
+    then:
+      - logger.log: 'Running boot script...'
+      - wait_until:
+          condition: time.has_time
+      - sensor.template.publish:
+          id: last_wake_up
+          state: !lambda 'return id(homeassistant_time).now().timestamp;'
+      - wait_until:
+          condition:
+            lambda: 'return id(data_received) == true;'
+      - if:
+          condition:
+            or:
+            # 4 = wake up timer
+              - lambda: 'return esp_sleep_get_wakeup_cause() == 4;'
+            # 5 = ESP_SLEEP_WAKEUP_TOUCHPAD
+              - lambda: 'return esp_sleep_get_wakeup_cause() == 5;'
+          then:
+            # Deep sleep wake up - update screen if data has changed
+            - script.execute: update_screen_if_data_updated
+          else:
+            # normal boot or wakeup button - update screen
+            - script.execute: update_screen
+      - script.execute: check_deep_sleep
+      - lambda: 'id(boot_script_finished_running) = true;'
+
+# Check whether the display needs to be refreshed every minute,
+# based on whether new data is received
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+    on_time:
+      - seconds: '/15'
+        then:
+          - if:
+              condition:
+                - binary_sensor.is_on: disable_deep_sleep
+              then:
+                - component.update: battery_voltage
+      - seconds: 0
+        minutes: /15
+        then:
+          - if:
+              condition: 
+                lambda: 'return id(boot_script_finished_running) == true;'
+              then:
+                - script.execute: update_screen_if_data_updated
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Epaper-Weather-And-Calendar"
+    password: !secret wifi_ap_password
+
+captive_portal:
+
+# Include custom fonts
+font:
+  - file: "fonts/GothamRnd-Book.ttf"
+    id: font_small_book
+    size: 18
+  - file: "fonts/GothamRnd-Bold.ttf"
+    id: font_large_bold # used to show current temperature
+    size: 108
+    glyphs:
+      [" ", "-", "°", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "C"]
+  - file: "fonts/GothamRnd-Bold.ttf"
+    id: font_small_bold
+    size: 18
+    # glyphs: [' ', '-', '°', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', 'M', 'I', 'N']
+
+  # Include Material Design Icons font
+  # Thanks to https://community.home-assistant.io/t/display-materialdesign-icons-on-esphome-attached-to-screen/199790/16
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_mdi_large
+    size: 96
+    glyphs: &mdi-weather-glyphs
+      - "\U000F0590" # mdi-weather-cloudy
+      - "\U000F0F2F" # mdi-weather-cloudy-alert
+      - "\U000F0E6E" # mdi-weather-cloudy-arrow-right
+      - "\U000F0591" # mdi-weather-fog
+      - "\U000F0592" # mdi-weather-hail
+      - "\U000F0F30" # mdi-weather-hazy
+      - "\U000F0898" # mdi-weather-hurricane
+      - "\U000F0593" # mdi-weather-lightning
+      - "\U000F067E" # mdi-weather-lightning-rainy
+      - "\U000F0594" # mdi-weather-night
+      - "\U000F0F31" # mdi-weather-night-partly-cloudy
+      - "\U000F0595" # mdi-weather-partly-cloudy
+      - "\U000F0F32" # mdi-weather-partly-lightning
+      - "\U000F0F33" # mdi-weather-partly-rainy
+      - "\U000F0F34" # mdi-weather-partly-snowy
+      - "\U000F0F35" # mdi-weather-partly-snowy-rainy
+      - "\U000F0596" # mdi-weather-pouring
+      - "\U000F0597" # mdi-weather-rainy
+      - "\U000F0598" # mdi-weather-snowy
+      - "\U000F0F36" # mdi-weather-snowy-heavy
+      - "\U000F067F" # mdi-weather-snowy-rainy
+      - "\U000F0599" # mdi-weather-sunny
+      - "\U000F0F37" # mdi-weather-sunny-alert
+      - "\U000F14E4" # mdi-weather-sunny-off
+      - "\U000F059A" # mdi-weather-sunset
+      - "\U000F059B" # mdi-weather-sunset-down
+      - "\U000F059C" # mdi-weather-sunset-up
+      - "\U000F0F38" # mdi-weather-tornado
+      - "\U000F059D" # mdi-weather-windy
+      - "\U000F059E" # mdi-weather-windy-variant
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_mdi_medium
+    size: 36
+    glyphs: *mdi-weather-glyphs
+
+  # fonts from home-assistant/esphome/epaper-frame-calendar.yaml
+  - file: $font_medium
+    id: font_medium_18 # used to show calendar subtitles
+    size: 18
+    glyphs: [' ', '!', '"', '%', '&', "'", '(', ')', '+', ',', '-', '.', '/', 
+      '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '?', '@', 'A', 
+      'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 
+      'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_', 'a', 'b', 'c', 'd', 
+      'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 
+      't', 'u', 'v', 'w', 'x', 'y', 'z', '¡', '°', '·', '¿', 'À', 'Á', 'Â', 'Ã', 
+      'Ä', 'Å', 'Æ', 'Ç', 'È', 'É', 'Ê', 'Ë', 'Ì', 'Í', 'Î', 'Ï', 'Ñ', 'Ò', 'Ó', 
+      'Ô', 'Õ', 'Ö', 'Ø', 'Ù', 'Ú', 'Û', 'Ü', 'Ý', 'Þ', 'ß', 'à', 'á', 'â', 'ã', 
+      'ä', 'å', 'æ', 'ç', 'è', 'é', 'ê', 'ë', 'ì', 'í', 'î', 'ï', 'ð', 'ñ', 'ò', 
+      'ó', 'ô', 'õ', 'ö', 'ø', 'ù', 'ú', 'û', 'ü', 'ý', 'þ', 'ÿ', 'Ā', 'ā', 'Ă', 
+      'ă', 'Ą', 'ą', 'Ć', 'ć', 'Č', 'č', 'Ď', 'ď', 'Đ', 'đ', 'Ē', 'ē', 
+      'Ė', 'ė', 'Ę', 'ę', 'Ě', 'ě', 'Ğ', 'ğ', 'Ģ', 'ģ', 'Ī', 
+      'ī', 'Į', 'į', 'ı', 'Ķ', 'ķ', 'Ĺ', 'ĺ', 'Ļ', 'ļ', 'Ľ', 'ľ', 'Ŀ', 
+      'ŀ', 'Ł', 'ł', 'Ń', 'ń', 'Ņ', 'ņ', 'Ň', 'ň', 'Ő', 'ő', 'Œ', 'œ', 'Ŕ', 'ŕ', 
+      'Ř', 'ř', 'Ś', 'ś', 'Ş', 'ş', 'Š', 'š', 'Ţ', 'ţ', 'Ť', 'ť', 
+      'Ū', 'ū', 'Ů', 'ů', 'Ű', 'ű', 'Ų', 'ų', 'Ŵ', 'ŵ', 'Ŷ', 'ŷ', 'Ÿ', 'Ź', 
+      'ź', 'Ż', 'ż', 'Ž', 'ž', 'Ș', 'ș', 'Ț', 'ț', '<','>', '–']
+  - file: $font_medium
+    id: font_medium_20 # used to show day name
+    size: 20
+    glyphs: [' ', '!', '"', '%', '&', "'", '(', ')', '+', ',', '-', '.', '/', 
+      '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '?', '@', 'A', 
+      'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 
+      'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_', 'a', 'b', 'c', 'd', 
+      'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 
+      't', 'u', 'v', 'w', 'x', 'y', 'z', '¡', '°', '·', '¿', 'À', 'Á', 'Â', 'Ã', 
+      'Ä', 'Å', 'Æ', 'Ç', 'È', 'É', 'Ê', 'Ë', 'Ì', 'Í', 'Î', 'Ï', 'Ñ', 'Ò', 'Ó', 
+      'Ô', 'Õ', 'Ö', 'Ø', 'Ù', 'Ú', 'Û', 'Ü', 'Ý', 'Þ', 'ß', 'à', 'á', 'â', 'ã', 
+      'ä', 'å', 'æ', 'ç', 'è', 'é', 'ê', 'ë', 'ì', 'í', 'î', 'ï', 'ð', 'ñ', 'ò', 
+      'ó', 'ô', 'õ', 'ö', 'ø', 'ù', 'ú', 'û', 'ü', 'ý', 'þ', 'ÿ', 'Ā', 'ā', 'Ă', 
+      'ă', 'Ą', 'ą', 'Ć', 'ć', 'Č', 'č', 'Ď', 'ď', 'Đ', 'đ', 'Ē', 'ē', 
+      'Ė', 'ė', 'Ę', 'ę', 'Ě', 'ě', 'Ğ', 'ğ', 'Ģ', 'ģ', 'Ī', 
+      'ī', 'Į', 'į', 'ı', 'Ķ', 'ķ', 'Ĺ', 'ĺ', 'Ļ', 'ļ', 'Ľ', 'ľ', 'Ŀ', 
+      'ŀ', 'Ł', 'ł', 'Ń', 'ń', 'Ņ', 'ņ', 'Ň', 'ň', 'Ő', 'ő', 'Œ', 'œ', 'Ŕ', 'ŕ', 
+      'Ř', 'ř', 'Ś', 'ś', 'Ş', 'ş', 'Š', 'š', 'Ţ', 'ţ', 'Ť', 'ť', 
+      'Ū', 'ū', 'Ů', 'ů', 'Ű', 'ű', 'Ų', 'ų', 'Ŵ', 'ŵ', 'Ŷ', 'ŷ', 'Ÿ', 'Ź', 
+      'ź', 'Ż', 'ż', 'Ž', 'ž', 'Ș', 'ș', 'Ț', 'ț', '<','>', '–']
+  - file: $font_bold
+    id: font_bold_22 # used to show calendar entry
+    size: 22
+    glyphs: [' ', '!', '"', '%', '&', "'", '(', ')', '+', ',', '-', '.', '/', 
+      '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '?', '@', 'A', 
+      'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 
+      'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_', 'a', 'b', 'c', 'd', 
+      'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 
+      't', 'u', 'v', 'w', 'x', 'y', 'z', '¡', '°', '·', '¿', 'À', 'Á', 'Â', 'Ã', 
+      'Ä', 'Å', 'Æ', 'Ç', 'È', 'É', 'Ê', 'Ë', 'Ì', 'Í', 'Î', 'Ï', 'Ñ', 'Ò', 'Ó', 
+      'Ô', 'Õ', 'Ö', 'Ø', 'Ù', 'Ú', 'Û', 'Ü', 'Ý', 'Þ', 'ß', 'à', 'á', 'â', 'ã', 
+      'ä', 'å', 'æ', 'ç', 'è', 'é', 'ê', 'ë', 'ì', 'í', 'î', 'ï', 'ð', 'ñ', 'ò', 
+      'ó', 'ô', 'õ', 'ö', 'ø', 'ù', 'ú', 'û', 'ü', 'ý', 'þ', 'ÿ', 'Ā', 'ā', 'Ă', 
+      'ă', 'Ą', 'ą', 'Ć', 'ć', 'Č', 'č', 'Ď', 'ď', 'Đ', 'đ', 'Ē', 'ē', 
+      'Ė', 'ė', 'Ę', 'ę', 'Ě', 'ě', 'Ğ', 'ğ', 'Ģ', 'ģ', 'Ī', 
+      'ī', 'Į', 'į', 'ı', 'Ķ', 'ķ', 'Ĺ', 'ĺ', 'Ļ', 'ļ', 'Ľ', 'ľ', 'Ŀ', 
+      'ŀ', 'Ł', 'ł', 'Ń', 'ń', 'Ņ', 'ņ', 'Ň', 'ň', 'Ő', 'ő', 'Œ', 'œ', 'Ŕ', 'ŕ', 
+      'Ř', 'ř', 'Ś', 'ś', 'Ş', 'ş', 'Š', 'š', 'Ţ', 'ţ', 'Ť', 'ť', 
+      'Ū', 'ū', 'Ů', 'ů', 'Ű', 'ű', 'Ų', 'ų', 'Ŵ', 'ŵ', 'Ŷ', 'ŷ', 'Ÿ', 'Ź', 
+      'ź', 'Ż', 'ż', 'Ž', 'ž', 'Ș', 'ș', '<','>', '–']
+  - file: $font_medium
+    id: font_medium_40 # used to show day number
+    size: 40
+    glyphs: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+  
+  - file: $font_mdi
+    id: font_mdi_extra_large # used to show alert icons
+    size: 300
+    glyphs:
+      # Definitions from https://github.com/kivymd/KivyMD/blob/master/kivymd/icon_definitions.py
+      - "\U000f10cd" # battery-alert-variant-outline
+      - "\U000F0E8E" # calendar-sync
+
+binary_sensor:
+  - platform: homeassistant
+    id: disable_deep_sleep
+    entity_id: input_boolean.disable_deep_sleep
+    on_state:
+      if:
+        condition:
+          binary_sensor.is_off: disable_deep_sleep
+        then:
+          - script.execute: enter_deep_sleep
+          
+  - platform: homeassistant
+    entity_id: $data_updated_during_deep_sleep_entity_id
+    id: data_updated_during_deep_sleep
+
+  - platform: esp32_touch
+    name: "ESP32 Touch Pad"
+    pin: $esp32_touch_pin
+    threshold: $esp32_touch_threshold
+    wakeup_threshold: $esp32_touch_threshold
+
+sensor:
+  # Create sensors for monitoring ePaper Weather and Calendar remotely.
+  - platform: template
+    name: Last Display Update
+    device_class: timestamp
+    entity_category: "diagnostic"
+    id: last_display_update
+
+  - platform: template
+    name: Last Wake Up
+    device_class: timestamp
+    entity_category: "diagnostic"
+    id: last_wake_up
+
+  - platform: template
+    name: Next Wake Up
+    device_class: timestamp
+    entity_category: "diagnostic"
+    id: next_wake_up
+
+  - platform: template
+    name: Display Refreshes
+    id: display_refreshes_sensor
+    accuracy_decimals: 0
+    unit_of_measurement: "Refreshes"
+    state_class: "total_increasing"
+    entity_category: "diagnostic"
+    lambda: "return id(display_refreshes);"
+
+  - platform: wifi_signal
+    name: WiFi Signal Strength
+    id: wifisignal
+    unit_of_measurement: "dBm"
+    entity_category: "diagnostic"
+    update_interval: 60s
+
+  - platform: template
+    name: Last Wake Up Cause
+    id: last_wake_up_cause
+    entity_category: "diagnostic"
+    accuracy_decimals: 0
+    lambda: return esp_sleep_get_wakeup_cause();
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: calendar_closest_end_time
+    id: closest_end_time
+
+  # Call Weather sensors from HA.
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: temperature
+    id: weather_temperature
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_temperature_0
+    id: weather_temperature_0
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_temperature_1
+    id: weather_temperature_1
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_temperature_2
+    id: weather_temperature_2
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_temperature_3
+    id: weather_temperature_3
+
+  - platform: adc
+    id: battery_adc
+    update_interval: never
+    attenuation: auto
+    #internal: true
+    pin: $adc_battery_pin
+
+  - platform: template
+    name: "Battery Voltage"
+    id: battery_voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 3
+    device_class: voltage
+    entity_category: diagnostic
+    update_interval: 5ms
+    lambda: |-
+      float adc = id(battery_adc).sample();
+      return adc;
+    filters:
+      - multiply: $adc_battery_factor
+      - min:
+          window_size: 50
+          send_every: 50
+          send_first_at: 50
+
+  - platform: template
+    name: "Battery Level"
+    id: battery_level
+    entity_category: diagnostic
+    device_class: battery
+    unit_of_measurement: '%'
+    lambda: |-
+      return id(battery_voltage).state;
+    filters:
+      - calibrate_linear:
+          - $battery_empty_voltage -> 0.0
+          - $battery_full_voltage -> 100
+      - clamp:
+          min_value: 0
+          max_value: 100
+    on_value_range:
+      - below: 0.0
+        then:
+          - script.execute: update_screen
+
+text_sensor:
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_condition_now
+    id: weather_condition_now
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_condition_0
+    id: weather_condition_0
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_timestamp_0
+    id: weather_timestamp_0
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_condition_1
+    id: weather_condition_1
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_timestamp_1
+    id: weather_timestamp_1
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_condition_2
+    id: weather_condition_2
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_timestamp_2
+    id: weather_timestamp_2
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_condition_3
+    id: weather_condition_3
+
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: weather_timestamp_3
+    id: weather_timestamp_3
+
+  # calender entries from HA
+  - platform: homeassistant
+    entity_id: $data_entity_id
+    attribute: calendar_entries
+    id: calendar_json
+    on_value:
+      then:
+        - lambda: 'id(data_received) = true;'
+
+# Define colors
+# This design is white on black so this is necessary.
+color:
+  - id: color_bg
+    red: 0%
+    green: 0%
+    blue: 0%
+    white: 0%
+  - id: color_text
+    red: 0%
+    green: 0%
+    blue: 0%
+    white: 100%
+
+# Pins for Waveshare ePaper ESP Board
+spi:
+  clk_pin: GPIO13
+  mosi_pin: GPIO14
+
+# Now render everything on the ePaper screen.
+display:
+  - platform: waveshare_epaper
+    id: eink_display
+    cs_pin: GPIO15
+    dc_pin: GPIO27
+    busy_pin:
+      number: GPIO25
+      inverted: true # needed on Waveshare eInk 7.50inV2, see https://esphome.io/components/display/waveshare_epaper
+    reset_pin: GPIO26
+    reset_duration: 2ms
+    model: 7.50inV2p # add suffix 'p' to model 7.50inV2 to use partial refresh
+    update_interval: never
+    rotation: 90°
+    full_update_every: 10 # only applies to model with suffix 'p', default 30
+    pages:
+      - id: erase
+        lambda: |-
+          // erase screen, fill with background color
+          it.fill(color_bg);
+      - id: show_content
+        lambda: |-
+          // Map weather states to MDI characters.
+          std::map<std::string, std::string> weather_icon_map
+            {
+              {"cloudy", "\U000F0590"},
+              {"cloudy-alert", "\U000F0F2F"},
+              {"cloudy-arrow-right", "\U000F0E6E"},
+              {"fog", "\U000F0591"},
+              {"hail", "\U000F0592"},
+              {"hazy", "\U000F0F30"},
+              {"hurricane", "\U000F0898"},
+              {"lightning", "\U000F0593"},
+              {"lightning-rainy", "\U000F067E"},
+              {"night", "\U000F0594"},
+              {"clear-night", "\U000F0594"},
+              {"night-partly-cloudy", "\U000F0F31"},
+              {"partlycloudy", "\U000F0595"},
+              {"partly-lightning", "\U000F0F32"},
+              {"partly-rainy", "\U000F0F33"},
+              {"partly-snowy", "\U000F0F34"},
+              {"partly-snowy-rainy", "\U000F0F35"},
+              {"pouring", "\U000F0596"},
+              {"rainy", "\U000F0597"},
+              {"snowy", "\U000F0598"},
+              {"snowy-heavy", "\U000F0F36"},
+              {"snowy-rainy", "\U000F067F"},
+              {"sunny", "\U000F0599"},
+              {"sunny-alert", "\U000F0F37"},
+              {"sunny-off", "\U000F14E4"},
+              {"sunset", "\U000F059A"},
+              {"sunset-down", "\U000F059B"},
+              {"sunset-up", "\U000F059C"},
+              {"tornado", "\U000F0F38"},
+              {"windy", "\U000F059D"},
+              {"windy-variant", "\U000F059E"},
+            };
+          // Map some more icons
+          std::map < std::string, std::string > icon_map
+            {
+              {
+                "battery-alert-variant-outline",
+                "\U000f10cd"
+              }, {
+                "calendar-sync",
+                "\U000F0E8E"
+              }
+            };
+
+          // Fill background.
+          // it.fill(color_bg);
+
+          // resolution of ePaper is 800x480, but with IKEA frame and passepartout, this is 
+          // width margin 20, usable width 440
+          // height margin 60, usable height 680
+          // test only .. draw outer frame which is visible in the IKEA frame
+          //it.rectangle(20,60,440,680);
+
+          if (id(battery_level).state == 0.0) {
+            id(battery_empty_symbol_shown) = true;
+            it.printf(240, 160, id(font_mdi_extra_large), color_text, TextAlign::TOP_CENTER, "%s", icon_map["battery-alert-variant-outline"].c_str());
+            it.printf(240, 500, id(font_small_bold), color_text, TextAlign::TOP_CENTER, "PLEASE CHARGE ...");
+          } else {
+            id(battery_empty_symbol_shown) = false;
+
+            // Show loading screen before data is received.
+            if (id(data_received) == false) {
+              it.printf(240, 160, id(font_mdi_extra_large), color_text, TextAlign::TOP_CENTER, "%s", icon_map["calendar-sync"].c_str());
+              it.printf(240, 500, id(font_small_bold), color_text, TextAlign::TOP_CENTER, "WAITING FOR DATA ...");
+            } else {
+
+              // Weather Section
+              int current_y_position = 65; // Initial vertical position (60 plus 5 padding)
+              const int max_y_position = 705; // Maximum vertical position, was 682
+              const int events_top_padding = 5; // Padding top first event within a day
+              const int forecast_padding = 5; // Padding between elements of forecast
+              const int event_spacing = 10; // Spacing between the events within a day
+              const int events_bottom_padding = 5; // Padding after the last entry of the day
+              const int day_spacing = 15; // Spacing between different days
+
+              int weather_icon_height = get_text_height( & it, id(font_mdi_large), "%s", weather_icon_map[id(weather_condition_now).state.c_str()].c_str());
+              int weather_temp_height = get_text_height( & it, id(font_mdi_large), "%2.0f°C", id(weather_temperature).state);
+              it.printf(100, current_y_position, id(font_mdi_large), color_text, TextAlign::TOP_CENTER, "%s", weather_icon_map[id(weather_condition_now).state.c_str()].c_str());
+              it.printf(300, current_y_position, id(font_large_bold), color_text, TextAlign::TOP_CENTER, "%2.0f°C", id(weather_temperature).state);
+              current_y_position += max(weather_icon_height,weather_temp_height) + forecast_padding;
+
+              // get height of first forecast, and hope all icons are the same ;-)
+              int forecast_time_height = get_text_height( & it, id(font_small_book), "%s", id(weather_timestamp_0).state.c_str());
+              int forecast_icon_height = get_text_height( & it, id(font_mdi_medium), "%s", weather_icon_map[id(weather_condition_0).state.c_str()].c_str());
+              int forecast_temp_height = get_text_height( & it, id(font_small_bold), "%2.0f°C", id(weather_temperature_0).state);
+
+              it.printf(105, current_y_position, id(font_small_book), color_text, TextAlign::TOP_CENTER, "%s", id(weather_timestamp_0).state.c_str());
+              it.printf(195, current_y_position, id(font_small_book), color_text, TextAlign::TOP_CENTER, "%s", id(weather_timestamp_1).state.c_str());
+              it.printf(285, current_y_position, id(font_small_book), color_text, TextAlign::TOP_CENTER, "%s", id(weather_timestamp_2).state.c_str());
+              it.printf(375, current_y_position, id(font_small_book), color_text, TextAlign::TOP_CENTER, "%s", id(weather_timestamp_3).state.c_str());
+              current_y_position += forecast_time_height; // no padding here;
+
+              it.printf(105, current_y_position, id(font_mdi_medium), color_text, TextAlign::TOP_CENTER, "%s", weather_icon_map[id(weather_condition_0).state.c_str()].c_str());
+              it.printf(195, current_y_position, id(font_mdi_medium), color_text, TextAlign::TOP_CENTER, "%s", weather_icon_map[id(weather_condition_1).state.c_str()].c_str());
+              it.printf(285, current_y_position, id(font_mdi_medium), color_text, TextAlign::TOP_CENTER, "%s", weather_icon_map[id(weather_condition_2).state.c_str()].c_str());
+              it.printf(375, current_y_position, id(font_mdi_medium), color_text, TextAlign::TOP_CENTER, "%s", weather_icon_map[id(weather_condition_3).state.c_str()].c_str());
+              current_y_position += forecast_icon_height + forecast_padding;
+
+              it.printf(105, current_y_position, id(font_small_bold), color_text, TextAlign::TOP_CENTER, "%2.0f°C", id(weather_temperature_0).state);
+              it.printf(195, current_y_position, id(font_small_bold), color_text, TextAlign::TOP_CENTER, "%2.0f°C", id(weather_temperature_1).state);
+              it.printf(285, current_y_position, id(font_small_bold), color_text, TextAlign::TOP_CENTER, "%2.0f°C", id(weather_temperature_2).state);
+              it.printf(375, current_y_position, id(font_small_bold), color_text, TextAlign::TOP_CENTER, "%2.0f°C", id(weather_temperature_3).state);
+              current_y_position += forecast_temp_height + event_spacing;
+
+              // show calendar data 
+              // Draw event list
+              DynamicJsonDocument doc(4096);
+              deserializeJson(doc, id(calendar_json).state.c_str());
+              JsonArray entries = doc.as<JsonArray>();
+          
+              int max_event_title_length = 27; // Max characters event title 
+              int max_event_subtitle_length = 30; // Max characters event subtitle 
+          
+              for (JsonVariant entry: entries) {
+                int day_number = entry["day"].as < int > ();
+                const char * day_name = entry["day_name"];
+          
+                // Calculate day title height
+                int day_number_height = get_text_height( & it, id(font_medium_40), "%d", day_number);
+                int day_name_height = get_text_height( & it, id(font_medium_20), "%s", day_name);
+                int day_title_height = day_number_height + day_name_height; // Total space needed for the day title
+          
+                // Check if there's enough space for the day's title before drawing
+                if (current_y_position + day_title_height > max_y_position) break;
+
+                // Draw day title
+                it.printf(52, current_y_position, id(font_medium_40), color_text, TextAlign::TOP_CENTER, "%d", day_number);
+                it.printf(52, current_y_position + day_number_height - 5, id(font_medium_20), color_text, TextAlign::TOP_CENTER, "%s", day_name);
+          
+                int entry_y_position = current_y_position + events_top_padding; // Initialize entry_y_position to align with the day number + optional padding
+          
+                auto processEntry = [ & ](const JsonVariant & item) -> bool {
+                  std::string summary = item["summary"].as < std::string > ();
+                  const char * start = item["start"];
+                  const char * end = item["end"];
+                  const char * location_name = item["location_name"];
+                  const char * calendar_name = item["calendar_name"];
+          
+                  std::string start_time = start ? extract_time(start) : "";
+                  std::string end_time = end ? extract_time(end) : "";
+          
+                  // start_time == empty => day event (check if multiple days to add that information)
+                  if (start_time.empty()) {
+          
+                    // Get current date in format yyyy-mm-dd
+                    auto get_current_date_str = []() -> std::string {
+                      auto now = id(homeassistant_time).now();
+          
+                      char buffer[11];
+                      sprintf(buffer, "%d-%02d-%02d", now.year, now.month, now.day_of_month);
+          
+                      return std::string(buffer);
+                    };
+          
+                    // Calculate length of event in days
+                    int days = days_between_dates(start, end);
+          
+                    // If event is longer than just today
+                    if (days > 1) {
+                      if (start == get_current_date_str()) {
+                        // Event is today
+                        // Subtract today from the length in days
+                        days -= 1;
+                        end_time = "left";
+                      } else {
+                        end_time = "long";
+                      }
+          
+                      start_time = std::to_string(days) + ((days > 1) ? " days" : " day");
+                    }
+                  }
+          
+                  std::string subtitle_string = std::string(calendar_name) + (location_name && strlen(location_name) > 0 ? " · " + std::string(location_name) : "");
+                  if (subtitle_string.length() > max_event_subtitle_length) {
+                    subtitle_string = subtitle_string.substr(0, max_event_subtitle_length - 3) + "...";
+                  }
+          
+                  if (summary.length() > max_event_title_length) {
+                    summary = summary.substr(0, max_event_title_length - 3) + "...";
+                  }
+          
+                  int summary_height = get_text_height( & it, id(font_bold_22), "%s", summary.c_str());
+                  int start_time_width = get_text_width( & it, id(font_bold_22), "%s", start_time.c_str());
+                  int subtitle_height = get_text_height( & it, id(font_medium_18), "%s", subtitle_string.c_str());
+          
+                  // Check if event will still fit
+                  if (entry_y_position + summary_height + subtitle_height + event_spacing <= max_y_position) {
+                    
+                    // Draw event summary incl. start time if present
+                    if (!start_time.empty()) {
+                      it.printf(90, entry_y_position, id(font_bold_22), color_text, TextAlign::TOP_LEFT, "%s", start_time.c_str());
+                      it.printf(90 + 5 + start_time_width , entry_y_position, id(font_bold_22), color_text, TextAlign::TOP_LEFT, "%s", summary.c_str());
+                    } else {
+                      it.printf(90, entry_y_position, id(font_bold_22), color_text, TextAlign::TOP_LEFT, "%s", summary.c_str());
+                    }
+          
+                    entry_y_position += summary_height + 2;
+          
+                    // Draw subtitle string (calendar name and location) incl. end time if present
+                    if (!end_time.empty()) {
+                      it.printf(90, entry_y_position, id(font_medium_18), color_text, TextAlign::TOP_LEFT, "%s", end_time.c_str());
+                      it.printf(90 + 5 + start_time_width, entry_y_position, id(font_medium_18), color_text, TextAlign::TOP_LEFT, "%s", subtitle_string.c_str());
+                    } else {
+                      it.printf(90, entry_y_position, id(font_medium_18), color_text, TextAlign::TOP_LEFT, "%s", subtitle_string.c_str());
+                    }
+          
+                    entry_y_position += subtitle_height + event_spacing;
+          
+                    // Event drawn - return true
+                    return true;
+                  } else {
+                    // Event did not fit and was not drawn - return false
+                    return false;
+                  }
+                };
+          
+                JsonArray all_day = entry["all_day"];
+                JsonArray other = entry["other"];
+          
+                for (JsonVariant item: all_day) {
+                  if (!processEntry(item)) break;
+                }
+          
+                for (JsonVariant item: other) {
+                  if (!processEntry(item)) break;
+                }
+          
+                entry_y_position += events_bottom_padding - event_spacing;
+          
+                // Draw the vertical line next to the day titles and events
+                it.line(85, current_y_position, 85, entry_y_position, color_text);
+          
+                // Update current_y_position for the next day, ensuring space between days
+                current_y_position = entry_y_position + day_spacing;
+              }
+              // End Draw event list
+
+              // Refresh Timestamp
+              // Code by EnsconcE from https://community.home-assistant.io/t/esphome-show-time/348903
+              char str[20];
+              time_t currTime = id(homeassistant_time).now().timestamp;
+              strftime(str, sizeof(str), "%H:%M", localtime(&currTime));
+              it.printf(240, 710, id(font_small_book), color_text, TextAlign::TOP_CENTER, "REFRESHED AT %s", str);
+            }
+          }
