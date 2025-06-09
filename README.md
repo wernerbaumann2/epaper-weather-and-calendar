@@ -7,10 +7,14 @@ When my brother called my and had some questions on microcontrollers and ePaper,
 That is why I started out on this project. I had not tinkered a lot with microcontrollers in recent years. Because of a very old installation of Arduino on a PC, I started out to install PlatformIO (a plugin for Visual Studio Code) on my Mac. And I ran the famous blink program on a Sparkfun ESP8266 Thing the same evening.
 
 ## Goals
-The goal of the Project for me is to 
-- display current weather including a forecast
-- together with the family calendar
+The goal of the Project for me was to 
+- display 
+  - current weather including a forecast
+  - the family calendar
 - running this all with the least possible amount of energy
+
+Once finalized, it looks like this: 
+<img src="ePaper Weather And Calendar.jpg" alt="the finalized frame!" height="400">
 
 ## Bill of Material
 - [Universal e-Paper Raw Panel Driver Board, ESP32 WiFi / Bluetooth Wireless](https://www.waveshare.com/e-paper-esp32-driver-board.htm)
