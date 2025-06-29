@@ -32,7 +32,7 @@ Once finalized, it looks like this:
 ## What do you need to take care of?
 - you can use the files in this repository, but note that e.g configuration.yaml only shows the entries needed by this project, i.e. probably you only need to add certain sections to your existing configuration.yaml.
 - make sure you download the necessary fonts from the sources referenced in this repo.
-- adapt the settings in epaper-weather-and-calendar.yaml to include your calenders defined in Home Assistant which you would like to shown on the frame
+- adapt the settings in epaper-weather-and-calendar.yaml to include your calenders defined in Home Assistant which you would like to show on the frame
 - adapt CALENDAR_NAMES in epaper_calendar_conversion.py if you need to rename calenders
 
 ## References
